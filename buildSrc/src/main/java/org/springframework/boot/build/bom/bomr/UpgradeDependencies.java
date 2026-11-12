@@ -1,17 +1,5 @@
 /*
- * Copyright 2012-2024 the original author or authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      https://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2012-present the original author or authors.
  */
 
 package org.springframework.boot.build.bom.bomr;
@@ -20,13 +8,15 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.Reader;
-import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
 import java.util.Set;
+import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
@@ -35,10 +25,13 @@ import javax.inject.Inject;
 
 import org.gradle.api.DefaultTask;
 import org.gradle.api.InvalidUserDataException;
+import org.gradle.api.artifacts.dsl.RepositoryHandler;
+import org.gradle.api.artifacts.repositories.MavenArtifactRepository;
 import org.gradle.api.internal.tasks.userinput.UserInputHandler;
 import org.gradle.api.provider.ListProperty;
 import org.gradle.api.provider.Property;
 import org.gradle.api.tasks.Input;
+import org.gradle.api.tasks.Internal;
 import org.gradle.api.tasks.Optional;
 import org.gradle.api.tasks.TaskAction;
 import org.gradle.api.tasks.TaskExecutionException;
@@ -46,6 +39,8 @@ import org.gradle.api.tasks.options.Option;
 
 import org.springframework.boot.build.bom.BomExtension;
 import org.springframework.boot.build.bom.Library;
+import org.springframework.boot.build.bom.Library.LinkType;
+import org.springframework.boot.build.bom.UpgradePolicy;
 import org.springframework.boot.build.bom.bomr.github.GitHub;
 import org.springframework.boot.build.bom.bomr.github.GitHubRepository;
 import org.springframework.boot.build.bom.bomr.github.Issue;
@@ -54,7 +49,7 @@ import org.springframework.boot.build.bom.bomr.version.DependencyVersion;
 import org.springframework.util.StringUtils;
 
 /**
- * Base class for tasks that upgrade dependencies in a bom.
+ * Base class for tasks that upgrade dependencies in a BOM.
  *
  * @author Andy Wilkinson
  * @author Moritz Halbritter
@@ -65,6 +60,10 @@ public abstract class UpgradeDependencies extends DefaultTask {
 
 	private final boolean movingToSnapshots;
 
+	private final UpgradeApplicator upgradeApplicator;
+
+	private final RepositoryHandler repositories;
+
 	@Inject
 	public UpgradeDependencies(BomExtension bom) {
 		this(bom, false);
@@ -74,11 +73,19 @@ public abstract class UpgradeDependencies extends DefaultTask {
 		this.bom = bom;
 		getThreads().convention(2);
 		this.movingToSnapshots = movingToSnapshots;
+		this.upgradeApplicator = new UpgradeApplicator(getProject().getBuildFile().toPath(),
+				new File(getProject().getRootProject().getProjectDir(), "gradle.properties").toPath());
+		this.repositories = getProject().getRepositories();
 	}
 
 	@Input
 	@Option(option = "milestone", description = "Milestone to which dependency upgrade issues should be assigned")
 	public abstract Property<String> getMilestone();
+
+	@Input
+	@Optional
+	@Option(option = "release-train", description = "Release train from which dependency versions should be resolved")
+	public abstract Property<String> getReleaseTrain();
 
 	@Input
 	@Optional
@@ -91,39 +98,59 @@ public abstract class UpgradeDependencies extends DefaultTask {
 	public abstract Property<String> getLibraries();
 
 	@Input
-	abstract ListProperty<URI> getRepositoryUris();
+	@Optional
+	@Option(option = "dry-run-upgrades",
+			description = "Whether to perform a dry run that doesn't open issues or change the bom")
+	public abstract Property<Boolean> getDryRun();
+
+	@Input
+	@Optional
+	@Option(option = "no-issues", description = "Whether to disable issue creation")
+	public abstract Property<Boolean> getNoIssues();
+
+	@Input
+	abstract ListProperty<String> getRepositoryNames();
 
 	@TaskAction
 	void upgradeDependencies() {
-		GitHubRepository repository = createGitHub().getRepository(this.bom.getUpgrade().getGitHub().getOrganization(),
+		GitHub gitHub = createGitHub("bomr.github.password");
+		GitHubRepository repository = gitHub.getRepository(this.bom.getUpgrade().getGitHub().getOrganization(),
 				this.bom.getUpgrade().getGitHub().getRepository());
 		List<String> issueLabels = verifyLabels(repository);
 		Milestone milestone = determineMilestone(repository);
 		List<Upgrade> upgrades = resolveUpgrades(milestone);
-		applyUpgrades(repository, issueLabels, milestone, upgrades);
+		if (!getDryRun().getOrElse(false)) {
+			applyUpgrades(repository, issueLabels, milestone, upgrades);
+		}
+		upgradesApplied(upgrades);
+	}
+
+	protected void upgradesApplied(List<Upgrade> upgrades) {
+
 	}
 
 	private void applyUpgrades(GitHubRepository repository, List<String> issueLabels, Milestone milestone,
 			List<Upgrade> upgrades) {
-		Path buildFile = getProject().getBuildFile().toPath();
-		Path gradleProperties = new File(getProject().getRootProject().getProjectDir(), "gradle.properties").toPath();
-		UpgradeApplicator upgradeApplicator = new UpgradeApplicator(buildFile, gradleProperties);
 		List<Issue> existingUpgradeIssues = repository.findIssues(issueLabels, milestone);
 		System.out.println("Applying upgrades...");
 		System.out.println("");
 		for (Upgrade upgrade : upgrades) {
-			System.out.println(upgrade.getLibrary().getName() + " " + upgrade.getVersion());
-			String title = issueTitle(upgrade);
+			System.out.println(upgrade.to().getNameAndVersion());
 			Issue existingUpgradeIssue = findExistingUpgradeIssue(existingUpgradeIssues, upgrade);
 			try {
-				Path modified = upgradeApplicator.apply(upgrade);
-				int issueNumber = getOrOpenUpgradeIssue(repository, issueLabels, milestone, title,
-						existingUpgradeIssue);
-				if (existingUpgradeIssue != null && existingUpgradeIssue.getState() == Issue.State.CLOSED) {
-					existingUpgradeIssue.label(Arrays.asList("type: task", "status: superseded"));
+				Path modified = this.upgradeApplicator.apply(upgrade);
+				Integer issueNumber = null;
+				if (!getNoIssues().getOrElse(Boolean.FALSE)) {
+					String title = issueTitle(upgrade);
+					String body = issueBody(upgrade, existingUpgradeIssue);
+					issueNumber = getOrOpenUpgradeIssue(repository, issueLabels, milestone, title, body,
+							existingUpgradeIssue);
+					if (existingUpgradeIssue != null && existingUpgradeIssue.getState() == Issue.State.CLOSED) {
+						existingUpgradeIssue.label(Arrays.asList("type: task", "status: superseded"));
+					}
+					System.out.println("   Issue: " + issueNumber + " - " + title
+							+ getExistingUpgradeIssueMessageDetails(existingUpgradeIssue));
 				}
-				System.out.println("   Issue: " + issueNumber + " - " + title
-						+ getExistingUpgradeIssueMessageDetails(existingUpgradeIssue));
 				if (new ProcessBuilder().command("git", "add", modified.toFile().getAbsolutePath())
 					.start()
 					.waitFor() != 0) {
@@ -133,7 +160,9 @@ public abstract class UpgradeDependencies extends DefaultTask {
 				if (new ProcessBuilder().command("git", "commit", "-m", commitMessage).start().waitFor() != 0) {
 					throw new IllegalStateException("git commit failed");
 				}
-				System.out.println("  Commit: " + commitMessage.substring(0, commitMessage.indexOf('\n')));
+				int newlineIndex = commitMessage.indexOf('\n');
+				System.out.println("  Commit: "
+						+ ((newlineIndex > -1) ? commitMessage.substring(0, newlineIndex) : commitMessage));
 			}
 			catch (IOException ex) {
 				throw new TaskExecutionException(this, ex);
@@ -145,11 +174,10 @@ public abstract class UpgradeDependencies extends DefaultTask {
 	}
 
 	private int getOrOpenUpgradeIssue(GitHubRepository repository, List<String> issueLabels, Milestone milestone,
-			String title, Issue existingUpgradeIssue) {
+			String title, String body, Issue existingUpgradeIssue) {
 		if (existingUpgradeIssue != null && existingUpgradeIssue.getState() == Issue.State.OPEN) {
 			return existingUpgradeIssue.getNumber();
 		}
-		String body = (existingUpgradeIssue != null) ? "Supersedes #" + existingUpgradeIssue.getNumber() : "";
 		return repository.openIssue(title, body, issueLabels, milestone);
 	}
 
@@ -176,12 +204,12 @@ public abstract class UpgradeDependencies extends DefaultTask {
 		return issueLabels;
 	}
 
-	private GitHub createGitHub() {
+	protected GitHub createGitHub(String passwordProperty) {
 		Properties bomrProperties = new Properties();
 		try (Reader reader = new FileReader(new File(System.getProperty("user.home"), ".bomr.properties"))) {
 			bomrProperties.load(reader);
 			String username = bomrProperties.getProperty("bomr.github.username");
-			String password = bomrProperties.getProperty("bomr.github.password");
+			String password = bomrProperties.getProperty(passwordProperty);
 			return GitHub.withCredentials(username, password);
 		}
 		catch (IOException ex) {
@@ -201,7 +229,7 @@ public abstract class UpgradeDependencies extends DefaultTask {
 	}
 
 	private Issue findExistingUpgradeIssue(List<Issue> existingUpgradeIssues, Upgrade upgrade) {
-		String toMatch = "Upgrade to " + upgrade.getLibrary().getName();
+		String toMatch = "Upgrade to " + upgrade.toRelease().getName();
 		for (Issue existingUpgradeIssue : existingUpgradeIssues) {
 			String title = existingUpgradeIssue.getTitle();
 			int lastSpaceIndex = title.lastIndexOf(' ');
@@ -217,28 +245,58 @@ public abstract class UpgradeDependencies extends DefaultTask {
 
 	@SuppressWarnings("deprecation")
 	private List<Upgrade> resolveUpgrades(Milestone milestone) {
-		List<Upgrade> upgrades = new InteractiveUpgradeResolver(getServices().get(UserInputHandler.class),
-				new MultithreadedLibraryUpdateResolver(getThreads().get(),
-						new StandardLibraryUpdateResolver(new MavenMetadataVersionResolver(getRepositoryUris().get()),
-								determineUpdatePredicates(milestone))))
-			.resolveUpgrades(matchingLibraries(), this.bom.getLibraries());
-		return upgrades;
+		InteractiveUpgradeResolver upgradeResolver = new InteractiveUpgradeResolver(
+				getServices().get(UserInputHandler.class), getLibraryUpdateResolver(milestone));
+		return upgradeResolver.resolveUpgrades(matchingLibraries(), this.bom.getLibraries());
 	}
 
-	protected List<BiPredicate<Library, DependencyVersion>> determineUpdatePredicates(Milestone milestone) {
+	private LibraryUpdateResolver getLibraryUpdateResolver(Milestone milestone) {
+		VersionResolver versionResolver = getVersionResolver();
+		LibraryUpdateResolver libraryResolver = new StandardLibraryUpdateResolver(versionResolver,
+				createVersionOptionResolver(milestone));
+		return new MultithreadedLibraryUpdateResolver(getThreads().get(), libraryResolver);
+	}
+
+	@Internal
+	protected VersionResolver getVersionResolver() {
+		return new MavenMetadataVersionResolver(getRepositories());
+	}
+
+	private Collection<MavenArtifactRepository> getRepositories() {
+		return getRepositoryNames().map(this::asRepositories).get();
+	}
+
+	private List<MavenArtifactRepository> asRepositories(List<String> repositoryNames) {
+		return repositoryNames.stream()
+			.map(this.repositories::getByName)
+			.map(MavenArtifactRepository.class::cast)
+			.toList();
+	}
+
+	protected BiFunction<Library, DependencyVersion, VersionOption> createVersionOptionResolver(Milestone milestone) {
 		List<BiPredicate<Library, DependencyVersion>> updatePredicates = new ArrayList<>();
 		updatePredicates.add(this::compliesWithUpgradePolicy);
 		updatePredicates.add(this::isAnUpgrade);
 		updatePredicates.add(this::isNotProhibited);
-		return updatePredicates;
+		return (library, dependencyVersion) -> {
+			if (this.compliesWithUpgradePolicy(library, dependencyVersion)
+					&& this.isAnUpgrade(library, dependencyVersion)
+					&& this.isNotProhibited(library, dependencyVersion)) {
+				return new VersionOption.ResolvedVersionOption(dependencyVersion, Collections.emptyList());
+			}
+			return null;
+		};
 	}
 
 	private boolean compliesWithUpgradePolicy(Library library, DependencyVersion candidate) {
-		return this.bom.getUpgrade().getPolicy().test(candidate, library.getVersion().getVersion());
+		UpgradePolicy libraryPolicy = library.getUpgradePolicy();
+		UpgradePolicy bomPolicy = this.bom.getUpgrade().getPolicy();
+		UpgradePolicy upgradePolicy = UpgradePolicy.max(libraryPolicy, bomPolicy);
+		return upgradePolicy.test(candidate, library.getVersion());
 	}
 
 	private boolean isAnUpgrade(Library library, DependencyVersion candidate) {
-		return library.getVersion().getVersion().isUpgrade(candidate, this.movingToSnapshots);
+		return library.getVersion().isUpgrade(candidate, this.movingToSnapshots);
 	}
 
 	private boolean isNotProhibited(Library library, DependencyVersion candidate) {
@@ -264,8 +322,21 @@ public abstract class UpgradeDependencies extends DefaultTask {
 		return libraryPredicate.test(library.getName());
 	}
 
-	protected abstract String issueTitle(Upgrade upgrade);
+	protected abstract String commitMessage(Upgrade upgrade, Integer issueNumber);
 
-	protected abstract String commitMessage(Upgrade upgrade, int issueNumber);
+	protected String issueTitle(Upgrade upgrade) {
+		return "Upgrade to " + upgrade.toRelease().getNameAndVersion();
+	}
+
+	protected String issueBody(Upgrade upgrade, Issue existingUpgrade) {
+		String description = upgrade.toRelease().getNameAndVersion();
+		String releaseNotesLinkUrl = upgrade.toRelease().getLinkUrl(LinkType.RELEASE_NOTES);
+		String body = (releaseNotesLinkUrl != null) ? "Upgrade to [%s](%s).".formatted(description, releaseNotesLinkUrl)
+				: "Upgrade to %s.".formatted(description);
+		if (existingUpgrade != null) {
+			body += "\n\nSupersedes #" + existingUpgrade.getNumber();
+		}
+		return body;
+	}
 
 }

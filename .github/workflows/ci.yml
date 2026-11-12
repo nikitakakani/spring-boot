@@ -2,33 +2,38 @@ name: CI
 on:
   push:
     branches:
-      - main
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+      - 'main'
+permissions:
+  contents: read
 jobs:
   ci:
     name: '${{ matrix.os.name}} | Java ${{ matrix.java.version}}'
+    if: ${{ github.repository == 'spring-projects/spring-boot' || github.repository == 'spring-projects/spring-boot-commercial' }}
     runs-on: ${{ matrix.os.id }}
-    if: ${{ github.repository == 'spring-projects/spring-boot' }}
     strategy:
+      fail-fast: false
       matrix:
         os:
-          - id: ubuntu22-8-32
+          - id: ${{ vars.UBUNTU_MEDIUM || 'ubuntu-latest' }}
             name: Linux
           - id: windows-latest
             name: Windows
         java:
           - version: 17
-            toolchain: false
+            toolchain: true
           - version: 21
             toolchain: true
-          - version: 22
+          - version: 25
+            toolchain: false
+          - version: 27
             toolchain: true
         exclude:
           - os:
               name: Linux
             java:
-              version: 17
+              version: 25
+          - os:
+              name: ${{ github.repository == 'spring-projects/spring-boot-commercial' && 'Windows' }}
     steps:
       - name: Prepare Windows runner
         if: ${{ runner.os == 'Windows' }}
@@ -37,19 +42,26 @@ jobs:
           git config --global core.longPaths true
           Stop-Service -name Docker
       - name: Check Out Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build
         id: build
         uses: ./.github/actions/build
         with:
-          java-version: ${{ matrix.java.version }}
+          commercial-release-repository-url: ${{ vars.COMMERCIAL_RELEASE_REPO_URL }}
+          commercial-repository-password: ${{ secrets.COMMERCIAL_ARTIFACTORY_PASSWORD }}
+          commercial-repository-username: ${{ secrets.COMMERCIAL_ARTIFACTORY_USERNAME }}
+          commercial-snapshot-repository-url: ${{ vars.COMMERCIAL_SNAPSHOT_REPO_URL }}
+          develocity-access-key: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
+          gradle-cache-read-only: false
+          java-early-access: ${{ matrix.java.early-access || 'false' }}
+          java-distribution: ${{ matrix.java.distribution }}
           java-toolchain: ${{ matrix.java.toolchain }}
-          develocity-access-key: ${{ secrets.GRADLE_ENTERPRISE_SECRET_ACCESS_KEY }}
+          java-version: ${{ matrix.java.version }}
       - name: Send Notification
-        uses: ./.github/actions/send-notification
         if: always()
+        uses: ./.github/actions/send-notification
         with:
-          webhook-url: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
-          status: ${{ job.status }}
           build-scan-url: ${{ steps.build.outputs.build-scan-url }}
           run-name: ${{ format('{0} | {1} | Java {2}', github.ref_name, matrix.os.name, matrix.java.version) }}
+          status: ${{ job.status }}
+          webhook-url: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}

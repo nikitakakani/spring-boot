@@ -1,17 +1,5 @@
 /*
- * Copyright 2012-2023 the original author or authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      https://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2012-present the original author or authors.
  */
 
 package org.springframework.boot.build.classpath;
@@ -48,10 +36,10 @@ import org.gradle.api.tasks.TaskAction;
  *
  * @author Andy Wilkinson
  */
-public class CheckClasspathForUnnecessaryExclusions extends DefaultTask {
+public abstract class CheckClasspathForUnnecessaryExclusions extends DefaultTask {
 
 	private static final Map<String, String> SPRING_BOOT_DEPENDENCIES_PROJECT = Collections.singletonMap("path",
-			":spring-boot-project:spring-boot-dependencies");
+			":platform:spring-boot-dependencies");
 
 	private final Map<String, Set<String>> exclusionsByDependencyId = new TreeMap<>();
 
@@ -59,7 +47,7 @@ public class CheckClasspathForUnnecessaryExclusions extends DefaultTask {
 
 	private final Dependency platform;
 
-	private final DependencyHandler dependencyHandler;
+	private final DependencyHandler dependencies;
 
 	private final ConfigurationContainer configurations;
 
@@ -68,10 +56,10 @@ public class CheckClasspathForUnnecessaryExclusions extends DefaultTask {
 	@Inject
 	public CheckClasspathForUnnecessaryExclusions(DependencyHandler dependencyHandler,
 			ConfigurationContainer configurations) {
-		this.dependencyHandler = getProject().getDependencies();
+		this.dependencies = getProject().getDependencies();
 		this.configurations = getProject().getConfigurations();
-		this.platform = this.dependencyHandler
-			.create(this.dependencyHandler.platform(this.dependencyHandler.project(SPRING_BOOT_DEPENDENCIES_PROJECT)));
+		this.platform = this.dependencies
+			.create(this.dependencies.platform(this.dependencies.project(SPRING_BOOT_DEPENDENCIES_PROJECT)));
 		getOutputs().upToDateWhen((task) -> true);
 	}
 
@@ -101,7 +89,7 @@ public class CheckClasspathForUnnecessaryExclusions extends DefaultTask {
 			.collect(Collectors.toCollection(TreeSet::new));
 		this.exclusionsByDependencyId.put(dependencyId, exclusions);
 		if (!exclusions.isEmpty()) {
-			this.dependencyById.put(dependencyId, getProject().getDependencies().create(dependencyId));
+			this.dependencyById.put(dependencyId, this.dependencies.create(dependencyId));
 		}
 	}
 

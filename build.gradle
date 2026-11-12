@@ -1,6 +1,9 @@
+/*
+ * Copyright 2012-present the original author or authors.
+ */
+
 plugins {
 	id "base"
-	id "org.jetbrains.kotlin.jvm" apply false // https://youtrack.jetbrains.com/issue/KT-30276
 }
 
 description = "Spring Boot Build"
@@ -8,16 +11,23 @@ description = "Spring Boot Build"
 defaultTasks 'build'
 
 allprojects {
-	group "org.springframework.boot"
+	group = "org.springframework.boot"
+}
+
+subprojects {
+	apply plugin: "org.springframework.boot.conventions"
 
 	repositories {
 		mavenCentral()
-		if (version.contains('-')) {
-			maven { url "https://repo.spring.io/milestone" }
+		maven {
+			name = "Shibboleth Releases"
+			url = "https://build.shibboleth.net/nexus/content/repositories/releases"
+			content {
+				includeGroup "org.opensaml"
+				includeGroup "net.shibboleth"
+			}
 		}
-		if (version.endsWith('-SNAPSHOT')) {
-			maven { url "https://repo.spring.io/snapshot" }
-		}
+		spring.mavenRepositories()
 	}
 
 	configurations.all {

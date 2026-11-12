@@ -1,3 +1,7 @@
+/*
+ * Copyright 2012-present the original author or authors.
+ */
+
 plugins {
 	id "com.gradle.plugin-publish" version "1.2.1"
 }

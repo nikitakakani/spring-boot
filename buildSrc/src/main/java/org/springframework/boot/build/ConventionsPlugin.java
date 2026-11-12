@@ -1,17 +1,5 @@
 /*
- * Copyright 2012-2024 the original author or authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      https://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2012-present the original author or authors.
  */
 
 package org.springframework.boot.build;
@@ -43,13 +31,18 @@ public class ConventionsPlugin implements Plugin<Project> {
 
 	@Override
 	public void apply(Project project) {
+		SystemRequirementsExtension systemRequirements = project.getExtensions()
+			.create("systemRequirements", SystemRequirementsExtension.class);
 		new NoHttpConventions().apply(project);
-		new JavaConventions().apply(project);
+		new JavaConventions(systemRequirements).apply(project);
 		new MavenPublishingConventions().apply(project);
 		new AntoraConventions().apply(project);
 		new KotlinConventions().apply(project);
 		new WarConventions().apply(project);
-		new EclipseConventions().apply(project);
+		new EclipseConventions(systemRequirements).apply(project);
+		new TestFixturesConventions().apply(project);
+		new ProtobufConventions().apply(project);
+		RepositoryTransformersExtension.apply(project);
 	}
 
 }

@@ -1,32 +1,21 @@
 /*
- * Copyright 2012-2024 the original author or authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      https://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2012-present the original author or authors.
  */
 
 package org.springframework.boot.build;
 
 import java.io.File;
-import java.util.HashMap;
-import java.util.Map;
 
 import org.gradle.api.Action;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
 import org.gradle.api.Task;
 import org.gradle.api.artifacts.Configuration;
+import org.gradle.api.artifacts.Dependency;
 import org.gradle.api.artifacts.DependencySet;
+import org.gradle.api.artifacts.ModuleDependency;
 import org.gradle.api.artifacts.ProjectDependency;
+import org.gradle.api.attributes.Category;
 import org.gradle.api.plugins.JavaLibraryPlugin;
 import org.gradle.api.plugins.JavaPlatformPlugin;
 import org.gradle.api.plugins.JavaPlugin;
@@ -58,7 +47,7 @@ public class MavenRepositoryPlugin implements Plugin<Project> {
 	public void apply(Project project) {
 		project.getPlugins().apply(MavenPublishPlugin.class);
 		PublishingExtension publishing = project.getExtensions().getByType(PublishingExtension.class);
-		File repositoryLocation = new File(project.getBuildDir(), "maven-repository");
+		File repositoryLocation = project.getLayout().getBuildDirectory().dir("maven-repository").get().getAsFile();
 		publishing.getRepositories().maven((mavenRepository) -> {
 			mavenRepository.setName("project");
 			mavenRepository.setUrl(repositoryLocation.toURI());
@@ -79,28 +68,47 @@ public class MavenRepositoryPlugin implements Plugin<Project> {
 		DependencySet target = projectRepository.getDependencies();
 		project.getPlugins()
 			.withType(JavaPlugin.class)
-			.all((javaPlugin) -> addMavenRepositoryDependencies(project, JavaPlugin.IMPLEMENTATION_CONFIGURATION_NAME,
-					target));
+			.all((javaPlugin) -> addMavenRepositoryProjectDependencies(project,
+					JavaPlugin.IMPLEMENTATION_CONFIGURATION_NAME, target));
 		project.getPlugins()
 			.withType(JavaLibraryPlugin.class)
-			.all((javaLibraryPlugin) -> addMavenRepositoryDependencies(project, JavaPlugin.API_CONFIGURATION_NAME,
-					target));
-		project.getPlugins()
-			.withType(JavaPlatformPlugin.class)
-			.all((javaPlugin) -> addMavenRepositoryDependencies(project, JavaPlatformPlugin.API_CONFIGURATION_NAME,
-					target));
+			.all((javaLibraryPlugin) -> addMavenRepositoryProjectDependencies(project,
+					JavaPlugin.API_CONFIGURATION_NAME, target));
+		project.getPlugins().withType(JavaPlatformPlugin.class).all((javaPlugin) -> {
+			addMavenRepositoryProjectDependencies(project, JavaPlatformPlugin.API_CONFIGURATION_NAME, target);
+			addMavenRepositoryPlatformDependencies(project, JavaPlatformPlugin.API_CONFIGURATION_NAME, target);
+		});
 	}
 
-	private void addMavenRepositoryDependencies(Project project, String sourceConfigurationName, DependencySet target) {
+	private void addMavenRepositoryProjectDependencies(Project project, String sourceConfigurationName,
+			DependencySet target) {
 		project.getConfigurations()
 			.getByName(sourceConfigurationName)
 			.getDependencies()
 			.withType(ProjectDependency.class)
 			.all((dependency) -> {
-				Map<String, String> dependencyDescriptor = new HashMap<>();
-				dependencyDescriptor.put("path", dependency.getDependencyProject().getPath());
-				dependencyDescriptor.put("configuration", MAVEN_REPOSITORY_CONFIGURATION_NAME);
-				target.add(project.getDependencies().project(dependencyDescriptor));
+				ProjectDependency copy = dependency.copy();
+				if (copy.getAttributes().isEmpty()) {
+					copy.setTargetConfiguration(MAVEN_REPOSITORY_CONFIGURATION_NAME);
+				}
+				target.add(copy);
+			});
+	}
+
+	private void addMavenRepositoryPlatformDependencies(Project project, String sourceConfigurationName,
+			DependencySet target) {
+		project.getConfigurations()
+			.getByName(sourceConfigurationName)
+			.getDependencies()
+			.withType(ModuleDependency.class)
+			.matching((dependency) -> {
+				Category category = dependency.getAttributes().getAttribute(Category.CATEGORY_ATTRIBUTE);
+				return Category.REGULAR_PLATFORM.equals(category.getName());
+			})
+			.all((dependency) -> {
+				Dependency pom = project.getDependencies()
+					.create(dependency.getGroup() + ":" + dependency.getName() + ":" + dependency.getVersion());
+				target.add(pom);
 			});
 	}
 

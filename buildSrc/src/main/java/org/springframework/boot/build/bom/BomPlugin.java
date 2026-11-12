@@ -1,17 +1,5 @@
 /*
- * Copyright 2012-2024 the original author or authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      https://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2012-present the original author or authors.
  */
 
 package org.springframework.boot.build.bom;
@@ -26,14 +14,15 @@ import groovy.util.Node;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
 import org.gradle.api.artifacts.Configuration;
+import org.gradle.api.file.RegularFileProperty;
 import org.gradle.api.plugins.JavaPlatformExtension;
 import org.gradle.api.plugins.JavaPlatformPlugin;
 import org.gradle.api.plugins.PluginContainer;
 import org.gradle.api.publish.PublishingExtension;
 import org.gradle.api.publish.maven.MavenPom;
 import org.gradle.api.publish.maven.MavenPublication;
+import org.gradle.api.tasks.TaskProvider;
 
-import org.springframework.boot.build.DeployedPlugin;
 import org.springframework.boot.build.MavenRepositoryPlugin;
 import org.springframework.boot.build.bom.Library.Group;
 import org.springframework.boot.build.bom.Library.Module;
@@ -54,20 +43,31 @@ public class BomPlugin implements Plugin<Project> {
 	@Override
 	public void apply(Project project) {
 		PluginContainer plugins = project.getPlugins();
-		plugins.apply(DeployedPlugin.class);
 		plugins.apply(MavenRepositoryPlugin.class);
 		plugins.apply(JavaPlatformPlugin.class);
 		JavaPlatformExtension javaPlatform = project.getExtensions().getByType(JavaPlatformExtension.class);
 		javaPlatform.allowDependencies();
 		createApiEnforcedConfiguration(project);
-		BomExtension bom = project.getExtensions()
-			.create("bom", BomExtension.class, project.getDependencies(), project);
-		CheckBom checkBom = project.getTasks().create("bomrCheck", CheckBom.class, bom);
+		BomExtension bom = project.getExtensions().create("bom", BomExtension.class, project);
+		TaskProvider<CreateResolvedBom> createResolvedBom = project.getTasks()
+			.register("createResolvedBom", CreateResolvedBom.class, bom);
+		TaskProvider<CheckBom> checkBom = project.getTasks().register("bomrCheck", CheckBom.class, bom);
+		checkBom.configure((task) -> setResolvedBom(task.getResolvedBomFile(), createResolvedBom));
+		TaskProvider<CheckLinks> checkLinks = project.getTasks().register("checkLinks", CheckLinks.class, bom);
+		checkLinks.configure((task) -> setResolvedBom(task.getResolvedBomFile(), createResolvedBom));
+		Configuration resolvedBom = project.getConfigurations().create("resolvedBom");
 		project.getTasks().named("check").configure((check) -> check.dependsOn(checkBom));
-		project.getTasks().create("bomrUpgrade", UpgradeBom.class, bom);
-		project.getTasks().create("moveToSnapshots", MoveToSnapshots.class, bom);
-		project.getTasks().register("checkLinks", CheckLinks.class, bom);
+		project.getTasks().register("bomrUpgrade", UpgradeBom.class, bom);
+		project.getTasks().register("moveToSnapshots", MoveToSnapshots.class, bom);
+		project.getArtifacts()
+			.add(resolvedBom.getName(), createResolvedBom.map(CreateResolvedBom::getOutputFile),
+					(artifact) -> artifact.builtBy(createResolvedBom));
 		new PublishingCustomizer(project, bom).customize();
+	}
+
+	private void setResolvedBom(RegularFileProperty resolvedBomFile,
+			TaskProvider<CreateResolvedBom> createResolvedBom) {
+		resolvedBomFile.set(createResolvedBom.flatMap(CreateResolvedBom::getOutputFile));
 	}
 
 	private void createApiEnforcedConfiguration(Project project) {
@@ -75,7 +75,6 @@ public class BomPlugin implements Plugin<Project> {
 			.create(API_ENFORCED_CONFIGURATION_NAME, (configuration) -> {
 				configuration.setCanBeConsumed(false);
 				configuration.setCanBeResolved(false);
-				configuration.setVisible(false);
 			});
 		project.getConfigurations()
 			.getByName(JavaPlatformPlugin.ENFORCED_API_ELEMENTS_CONFIGURATION_NAME)
@@ -248,7 +247,7 @@ public class BomPlugin implements Plugin<Project> {
 						plugin.appendNode("artifactId", pluginName);
 						String versionProperty = library.getVersionProperty();
 						String value = (versionProperty != null) ? "${" + versionProperty + "}"
-								: library.getVersion().getVersion().toString();
+								: library.getVersion().toString();
 						plugin.appendNode("version", value);
 					}
 				}
@@ -269,13 +268,8 @@ public class BomPlugin implements Plugin<Project> {
 
 		private Node findChild(Node parent, String name) {
 			for (Object child : parent.children()) {
-				if (child instanceof Node node) {
-					if ((node.name() instanceof QName qname) && name.equals(qname.getLocalPart())) {
-						return node;
-					}
-					if (name.equals(node.name())) {
-						return node;
-					}
+				if (isNodeWithName(child, name)) {
+					return (Node) child;
 				}
 			}
 			return null;

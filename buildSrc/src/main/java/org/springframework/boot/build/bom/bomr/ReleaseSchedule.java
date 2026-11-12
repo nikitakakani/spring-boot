@@ -1,17 +1,5 @@
 /*
- * Copyright 2023-2023 the original author or authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      https://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2012-present the original author or authors.
  */
 
 package org.springframework.boot.build.bom.bomr;
@@ -28,8 +16,7 @@ import java.util.regex.Pattern;
 import org.springframework.boot.build.bom.bomr.version.DependencyVersion;
 import org.springframework.http.ResponseEntity;
 import org.springframework.util.LinkedCaseInsensitiveMap;
-import org.springframework.web.client.RestOperations;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.RestClient;
 
 /**
  * Release schedule for Spring projects, retrieved from
@@ -41,20 +28,22 @@ class ReleaseSchedule {
 
 	private static final Pattern LIBRARY_AND_VERSION = Pattern.compile("([A-Za-z0-9 ]+) ([0-9A-Za-z.-]+)");
 
-	private final RestOperations rest;
+	private final RestClient rest;
 
 	ReleaseSchedule() {
-		this(new RestTemplate());
+		this(RestClient.create());
 	}
 
-	ReleaseSchedule(RestOperations rest) {
+	ReleaseSchedule(RestClient rest) {
 		this.rest = rest;
 	}
 
 	@SuppressWarnings({ "unchecked", "rawtypes" })
 	Map<String, List<Release>> releasesBetween(OffsetDateTime start, OffsetDateTime end) {
-		ResponseEntity<List> response = this.rest
-			.getForEntity("https://calendar.spring.io/releases?start=" + start + "&end=" + end, List.class);
+		ResponseEntity<List> response = this.rest.get()
+			.uri("https://calendar.spring.io/releases?start=" + start + "&end=" + end)
+			.retrieve()
+			.toEntity(List.class);
 		List<Map<String, String>> body = response.getBody();
 		Map<String, List<Release>> releasesByLibrary = new LinkedCaseInsensitiveMap<>();
 		body.stream()

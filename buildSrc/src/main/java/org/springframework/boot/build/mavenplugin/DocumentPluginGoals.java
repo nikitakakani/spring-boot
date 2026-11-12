@@ -1,17 +1,5 @@
 /*
- * Copyright 2012-2024 the original author or authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      https://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2012-present the original author or authors.
  */
 
 package org.springframework.boot.build.mavenplugin;
@@ -21,10 +9,12 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.List;
-import java.util.Map;
 
 import org.gradle.api.DefaultTask;
 import org.gradle.api.Task;
+import org.gradle.api.file.DirectoryProperty;
+import org.gradle.api.file.RegularFileProperty;
+import org.gradle.api.provider.MapProperty;
 import org.gradle.api.tasks.Input;
 import org.gradle.api.tasks.InputFile;
 import org.gradle.api.tasks.OutputDirectory;
@@ -39,46 +29,22 @@ import org.springframework.boot.build.mavenplugin.PluginXmlParser.Plugin;
  *
  * @author Andy Wilkinson
  */
-public class DocumentPluginGoals extends DefaultTask {
+public abstract class DocumentPluginGoals extends DefaultTask {
 
 	private final PluginXmlParser parser = new PluginXmlParser();
 
-	private File pluginXml;
-
-	private File outputDir;
-
-	private Map<String, String> goalSections;
-
 	@OutputDirectory
-	public File getOutputDir() {
-		return this.outputDir;
-	}
-
-	public void setOutputDir(File outputDir) {
-		this.outputDir = outputDir;
-	}
+	public abstract DirectoryProperty getOutputDir();
 
 	@Input
-	public Map<String, String> getGoalSections() {
-		return this.goalSections;
-	}
-
-	public void setGoalSections(Map<String, String> goalSections) {
-		this.goalSections = goalSections;
-	}
+	public abstract MapProperty<String, String> getGoalSections();
 
 	@InputFile
-	public File getPluginXml() {
-		return this.pluginXml;
-	}
-
-	public void setPluginXml(File pluginXml) {
-		this.pluginXml = pluginXml;
-	}
+	public abstract RegularFileProperty getPluginXml();
 
 	@TaskAction
 	public void documentPluginGoals() throws IOException {
-		Plugin plugin = this.parser.parse(this.pluginXml);
+		Plugin plugin = this.parser.parse(getPluginXml().getAsFile().get());
 		writeOverview(plugin);
 		for (Mojo mojo : plugin.getMojos()) {
 			documentMojo(plugin, mojo);
@@ -86,7 +52,8 @@ public class DocumentPluginGoals extends DefaultTask {
 	}
 
 	private void writeOverview(Plugin plugin) throws IOException {
-		try (PrintWriter writer = new PrintWriter(new FileWriter(new File(this.outputDir, "overview.adoc")))) {
+		try (PrintWriter writer = new PrintWriter(
+				new FileWriter(new File(getOutputDir().getAsFile().get(), "overview.adoc")))) {
 			writer.println("[cols=\"1,3\"]");
 			writer.println("|===");
 			writer.println("| Goal | Description");
@@ -101,7 +68,8 @@ public class DocumentPluginGoals extends DefaultTask {
 	}
 
 	private void documentMojo(Plugin plugin, Mojo mojo) throws IOException {
-		try (PrintWriter writer = new PrintWriter(new FileWriter(new File(this.outputDir, mojo.getGoal() + ".adoc")))) {
+		try (PrintWriter writer = new PrintWriter(
+				new FileWriter(new File(getOutputDir().getAsFile().get(), mojo.getGoal() + ".adoc")))) {
 			String sectionId = goalSectionId(mojo, true);
 			writer.printf("[[%s]]%n", sectionId);
 			writer.printf("= `%s:%s`%n%n", plugin.getGoalPrefix(), mojo.getGoal());
@@ -143,7 +111,7 @@ public class DocumentPluginGoals extends DefaultTask {
 	}
 
 	private String goalSectionId(Mojo mojo, boolean innerReference) {
-		String goalSection = this.goalSections.get(mojo.getGoal());
+		String goalSection = getGoalSections().getting(mojo.getGoal()).get();
 		if (goalSection == null) {
 			throw new IllegalStateException("Goal '" + mojo.getGoal() + "' has not be assigned to a section");
 		}
